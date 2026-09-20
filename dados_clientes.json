@@ -1,0 +1,16 @@
+[
+  {
+    "id": 1,
+    "nome": "Mariana Souza",
+    "email": "mariana.souza@gmail.com",
+    "cpf": "987.654.321-11",
+    "telefone": "(21) 99999-8888"
+  },
+  {
+    "id": 2,
+    "nome": "Fernando Alves",
+    "email": "fernando.alves@hotmail.com",
+    "cpf": "456.789.123-22",
+    "telefone": "(11) 97777-6666"
+  }
+]
