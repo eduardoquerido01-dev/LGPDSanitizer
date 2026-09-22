@@ -1,109 +1,100 @@
 import streamlit as st
 import pandas as pd
-import json
 import re
-from supabase import create_client
+import io
 
-# Configuração da página
-st.set_page_config(page_title="LGPDSanitizer", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Anificador LGPDS - Sanitizador de Dados", layout="wide")
 
-# Inicialização do Supabase
-@st.cache_resource
-def init_supabase():
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
+st.title("🛡️ Anificador LGPDS - Sanitização de Dados (LGPD)")
+st.write("Proteja a privacidade dos seus clientes anonimizando dados sensíveis (PII) instantaneamente.")
 
-supabase = init_supabase()
+# Funções de mascaramento
+def mask_email(email):
+    if not isinstance(email, str) or '@' not in email:
+        return email
+    parts = email.split('@')
+    user = parts[0]
+    domain = parts[1]
+    masked_user = user[0] + '***' if len(user) > 1 else '***'
+    return f"{masked_user}@{domain}"
 
-# Estado da sessão para utilizador
-if "user" not in st.session_state:
-    st.session_state.user = None
+def mask_cpf(cpf):
+    if not isinstance(cpf, str):
+        cpf = str(cpf)
+    digits = re.sub(r'\D', '', cpf)
+    if len(digits) == 11:
+        return f"***.***.***-{digits[-2:]}"
+    return cpf
 
-# -------------------------------------------------------------
-# FUNÇÕES DE SANITIZAÇÃO (MASCARAMENTO DE PII)
-# -------------------------------------------------------------
-def mask_cpf(text):
-    if not isinstance(text, str):
-        text = str(text)
-    # Procura CPFs com ou sem pontuação
-    cpf_pattern = r'\b\d{3}[\.\s]?\d{3}[\.\s]?\d{3}[-\s]?\d{2}\b'
-    return re.sub(cpf_pattern, '***.***.***-**', text)
+def mask_phone(phone):
+    if not isinstance(phone, str):
+        phone = str(phone)
+    digits = re.sub(r'\D', '', phone)
+    if len(digits) >= 10:
+        ddd = digits[:2]
+        last_four = digits[-4:]
+        return f"({ddd}) *****-{last_four}"
+    return phone
 
-def mask_email(text):
-    if not isinstance(text, str):
-        text = str(text)
-    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
-    def replace_email(match):
-        email = match.group(0)
-        parts = email.split('@')
-        name = parts[0]
-        domain = parts[1]
-        masked_name = name[0] + '***' if len(name) > 1 else '***'
-        return f"{masked_name}@{domain}"
-    return re.sub(email_pattern, replace_email, text)
+def sanitize_dataframe(df):
+    df_clean = df.copy()
+    for col in df_clean.columns:
+        col_lower = col.lower()
+        if 'email' in col_lower or 'e-mail' in col_lower:
+            df_clean[col] = df_clean[col].apply(mask_email)
+        elif 'cpf' in col_lower:
+            df_clean[col] = df_clean[col].apply(mask_cpf)
+        elif 'telefone' in col_lower or 'phone' in col_lower or 'celular' in col_lower or 'tel' in col_lower:
+            df_clean[col] = df_clean[col].apply(mask_phone)
+    return df_clean
 
-def mask_phone(text):
-    if not isinstance(text, str):
-        text = str(text)
-    # Captura telefones com ou sem +55, DDD e hífen
-    phone_pattern = r'(\+?55\s?)?(\(?\d{2}\)?\s?)?(\d{4,5})[-.\s]?(\d{4})'
-    return re.sub(phone_pattern, r'\1\2*****-\4', text)
-
-def sanitize_value(val):
-    if isinstance(val, str):
-        val = mask_cpf(val)
-        val = mask_email(val)
-        val = mask_phone(val)
-    return val
-
-# -------------------------------------------------------------
-# TELA DE AUTENTICAÇÃO E PAINEL PRINCIPAL
-# -------------------------------------------------------------
-st.title("🛡️ LGPDSanitizer")
-st.subheader("Sanitização e Mascaramento de Dados em Conformidade com a LGPD")
-st.write("Carregue o seu arquivo (CSV ou JSON) para remover dados sensíveis (PII) instantaneamente.")
-
-uploaded_file = st.file_uploader("Arraste e solte o seu arquivo aqui", type=["csv", "json"])
+# Upload do Ficheiro
+uploaded_file = st.file_uploader("Envie a sua planilha (.csv) para sanitização", type=["csv"])
 
 if uploaded_file is not None:
-    st.info(f"📁 Arquivo selecionado: **{uploaded_file.name}**")
-    
-    if st.button("🚀 Sanitizar Arquivo Agora", type="primary"):
-        file_type = uploaded_file.name.split(".")[-1].lower()
-
-        if file_type == "csv":
-            df = pd.read_csv(uploaded_file, dtype=str)
-            # Aplica o mascaramento em todas as células
-            df_sanitized = df.map(sanitize_value)
-
-            st.success("✅ Processamento concluído com sucesso!")
+    try:
+        # Leitura diretamente da memória RAM
+        df = pd.read_csv(uploaded_file)
+        
+        st.subheader("📋 Prévia dos Dados Originais")
+        st.dataframe(df.head(5), use_container_width=True)
+        
+        # Modo de Demonstração (Freemium): limita a 10 linhas
+        total_rows = len(df)
+        limit_rows = 10
+        
+        if total_rows > limit_rows:
+            st.warning(f"⚠️ **Modo Demonstração Gratuito:** Sua planilha possui **{total_rows} linhas**, mas na versão gratuita apenas as **primeiras {limit_rows} linhas** serão processadas.")
+            df_to_process = df.head(limit_rows)
+        else:
+            df_to_process = df
             
-            with st.expander("👁️ Ver prévia dos dados sanitizados", expanded=True):
-                st.dataframe(df_sanitized)
+        # Processamento em memória
+        df_sanitized = sanitize_dataframe(df_to_process)
+        
+        st.subheader("🔒 Prévia dos Dados Sanitizados (Protegidos)")
+        st.dataframe(df_sanitized, use_container_width=True)
+        
+        # Download da versão gratuita
+        csv_buffer = io.BytesIO()
+        df_sanitized.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
+        csv_buffer.seek(0)
+        
+        st.download_button(
+            label="⬇️ Descarregar Arquivo Sanitizado (Amostra Grátis)",
+            data=csv_buffer,
+            file_name="dados_sanitizados_amostra.csv",
+            mime="text/csv"
+        )
+        
+        # Banners Comercial de Upsell para o Plano Pago
+        st.divider()
+        st.info("🚀 **Precisa processar a planilha completa sem limite de linhas?**\n\n"
+                "Desbloqueie o **Plano Empresarial Pro** e tenha acesso a:\n"
+                "- Processamento de arquivos ilimitados sem restrição de linhas\n"
+                "- Suporte prioritário via WhatsApp/E-mail\n"
+                "- Garantia de conformidade total e relatório de auditoria\n\n"
+                "👉 **[Clique aqui para assinar por R$ 99/mês](https://asasa.com.br)** *(Link de pagamento demonstrativo)*")
 
-            csv_data = df_sanitized.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Descarregar Arquivo Sanitizado",
-                data=csv_data,
-                file_name=f"sanitizado_{uploaded_file.name}",
-                mime="text/csv"
-            )
-
-        elif file_type == "json":
-            data = json.load(uploaded_file)
-            raw_str = json.dumps(data)
-            sanitized_str = sanitize_value(raw_str)
-            sanitized_json = json.loads(sanitized_str)
-
-            st.success("✅ Processamento concluído com sucesso!")
-            
-            with st.expander("👁️ Ver prévia dos dados sanitizados", expanded=True):
-                st.json(sanitized_json)
-
-            st.download_button(
-                label="📥 Descarregar Arquivo Sanitizado",
-                data=json.dumps(sanitized_json, indent=2),
-                file_name=f"sanitizado_{uploaded_file.name}",
-                mime="application/json"
-            )
+    except Exception as e:
+        st.error(f"Erro ao processar o arquivo: {e}")
