@@ -1,71 +1,109 @@
-import sys
-import os
+import streamlit as st
+import pandas as pd
 import json
-import csv
 import re
-from faker import Faker
+from supabase import create_client
 
-fake = Faker('pt_BR')
+# Configuração da página
+st.set_page_config(page_title="LGPDSanitizer", page_icon="🛡️", layout="wide")
 
-def anonimizar_registro(registro):
-    if isinstance(registro, dict):
-        for chave, valor in registro.items():
-            if isinstance(valor, str):
-                if re.search(r'\b\d{3}\.\d{3}\.\d{3}-\d{2}\b', valor):
-                    registro[chave] = fake.cpf()
-                elif '@' in valor and '.' in valor:
-                    registro[chave] = fake.email()
-                elif 'nome' in chave.lower():
-                    registro[chave] = fake.name()
-                elif 'telefone' in chave.lower() or 'celular' in chave.lower():
-                    registro[chave] = fake.cellphone_number()
-            elif isinstance(valor, dict):
-                anonimizar_registro(valor)
-    elif isinstance(registro, list):
-        for item in registro:
-            anonimizar_registro(item)
-    return registro
+# Inicialização do Supabase
+@st.cache_resource
+def init_supabase():
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
 
-def processar_arquivo(caminho_arquivo):
-    if not os.path.exists(caminho_arquivo):
-        print(f"Erro: O arquivo '{caminho_arquivo}' não foi encontrado.")
-        return
+supabase = init_supabase()
 
-    nome_base, extensao = os.path.splitext(caminho_arquivo)
-    extensao = extensao.lower()
-    caminho_saida = f"{nome_base}_sanitizado{extensao}"
+# Estado da sessão para utilizador
+if "user" not in st.session_state:
+    st.session_state.user = None
 
-    if extensao == '.json':
-        with open(caminho_arquivo, 'r', encoding='utf-8') as f:
-            dados = json.load(f)
-        dados_sanitizados = anonimizar_registro(dados)
-        with open(caminho_saida, 'w', encoding='utf-8') as f:
-            json.dump(dados_sanitizados, f, indent=2, ensure_ascii=False)
+# -------------------------------------------------------------
+# FUNÇÕES DE SANITIZAÇÃO (MASCARAMENTO DE PII)
+# -------------------------------------------------------------
+def mask_cpf(text):
+    if not isinstance(text, str):
+        text = str(text)
+    # Procura CPFs com ou sem pontuação
+    cpf_pattern = r'\b\d{3}[\.\s]?\d{3}[\.\s]?\d{3}[-\s]?\d{2}\b'
+    return re.sub(cpf_pattern, '***.***.***-**', text)
+
+def mask_email(text):
+    if not isinstance(text, str):
+        text = str(text)
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
+    def replace_email(match):
+        email = match.group(0)
+        parts = email.split('@')
+        name = parts[0]
+        domain = parts[1]
+        masked_name = name[0] + '***' if len(name) > 1 else '***'
+        return f"{masked_name}@{domain}"
+    return re.sub(email_pattern, replace_email, text)
+
+def mask_phone(text):
+    if not isinstance(text, str):
+        text = str(text)
+    # Captura telefones com ou sem +55, DDD e hífen
+    phone_pattern = r'(\+?55\s?)?(\(?\d{2}\)?\s?)?(\d{4,5})[-.\s]?(\d{4})'
+    return re.sub(phone_pattern, r'\1\2*****-\4', text)
+
+def sanitize_value(val):
+    if isinstance(val, str):
+        val = mask_cpf(val)
+        val = mask_email(val)
+        val = mask_phone(val)
+    return val
+
+# -------------------------------------------------------------
+# TELA DE AUTENTICAÇÃO E PAINEL PRINCIPAL
+# -------------------------------------------------------------
+st.title("🛡️ LGPDSanitizer")
+st.subheader("Sanitização e Mascaramento de Dados em Conformidade com a LGPD")
+st.write("Carregue o seu arquivo (CSV ou JSON) para remover dados sensíveis (PII) instantaneamente.")
+
+uploaded_file = st.file_uploader("Arraste e solte o seu arquivo aqui", type=["csv", "json"])
+
+if uploaded_file is not None:
+    st.info(f"📁 Arquivo selecionado: **{uploaded_file.name}**")
+    
+    if st.button("🚀 Sanitizar Arquivo Agora", type="primary"):
+        file_type = uploaded_file.name.split(".")[-1].lower()
+
+        if file_type == "csv":
+            df = pd.read_csv(uploaded_file, dtype=str)
+            # Aplica o mascaramento em todas as células
+            df_sanitized = df.map(sanitize_value)
+
+            st.success("✅ Processamento concluído com sucesso!")
             
-    elif extensao == '.csv':
-        with open(caminho_arquivo, 'r', encoding='utf-8') as f:
-            leitor = list(csv.DictReader(f))
-        dados_sanitizados = anonimizar_registro(leitor)
-        with open(caminho_saida, 'w', encoding='utf-8', newline='') as f:
-            escritor = csv.DictWriter(f, fieldnames=dados_sanitizados[0].keys())
-            escritor.writeheader()
-            escritor.writerows(dados_sanitizados)
+            with st.expander("👁️ Ver prévia dos dados sanitizados", expanded=True):
+                st.dataframe(df_sanitized)
 
-    elif extensao == '.sql':
-        with open(caminho_arquivo, 'r', encoding='utf-8') as f:
-            linhas = f.readlines()
-        linhas_sanitizadas = []
-        for linha in linhas:
-            linha_mod = re.sub(r'\b\d{3}\.\d{3}\.\d{3}-\d{2}\b', lambda m: fake.cpf(), linha)
-            linha_mod = re.sub(r'[\w\.-]+@[\w\.-]+\.\w+', lambda m: fake.email(), linha_mod)
-            linhas_sanitizadas.append(linha_mod)
-        with open(caminho_saida, 'w', encoding='utf-8') as f:
-            f.writelines(linhas_sanitizadas)
+            csv_data = df_sanitized.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Descarregar Arquivo Sanitizado",
+                data=csv_data,
+                file_name=f"sanitizado_{uploaded_file.name}",
+                mime="text/csv"
+            )
 
-    print(f" Sucesso! Arquivo sanitizado gerado: {caminho_saida}")
+        elif file_type == "json":
+            data = json.load(uploaded_file)
+            raw_str = json.dumps(data)
+            sanitized_str = sanitize_value(raw_str)
+            sanitized_json = json.loads(sanitized_str)
 
-if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        processar_arquivo(sys.argv[1])
-    else:
-        print("Uso: python app.py <nome_do_arquivo>")
+            st.success("✅ Processamento concluído com sucesso!")
+            
+            with st.expander("👁️ Ver prévia dos dados sanitizados", expanded=True):
+                st.json(sanitized_json)
+
+            st.download_button(
+                label="📥 Descarregar Arquivo Sanitizado",
+                data=json.dumps(sanitized_json, indent=2),
+                file_name=f"sanitizado_{uploaded_file.name}",
+                mime="application/json"
+            )
